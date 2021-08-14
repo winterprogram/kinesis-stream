@@ -1,0 +1,8 @@
+{
+  "Parameters": {
+    "S3Source": "code-artifact-bucket",
+    "Environment": "prod",
+    "Name": "analytics-stream",
+    "MongoUrl": "mongodb+srv://nishantadmin:twinein04july@90@prod.i3zdd.mongodb.net/Twineinprod?retryWrites=true&w=majority"
+  }
+}

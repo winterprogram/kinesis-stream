@@ -1,0 +1,23 @@
+{
+  "name": "stream-service",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.58",
+    "@types/mongodb": "^3.5.25",
+    "aws-sdk": "^2.712.0",
+    "ts-node": "^8.10.2",
+    "typescript": "^3.9.6"
+  },
+  "dependencies": {
+    "aws-lambda": "^1.0.6",
+    "mongodb": "^3.6.3"
+  }
+}

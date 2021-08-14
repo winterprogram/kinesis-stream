@@ -1,0 +1,156 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Template to Deploy the Lambda Function with the API Gateway
+Parameters:
+  S3Source:
+    Type: String
+    Description: S3 Bucket where the function code is present
+  Name:
+    Type: String
+    Description: Name of the Lambda Function
+  Environment:
+    Type: String
+    Description: Deployment Environment
+  MongoUrl:
+    Type: String
+    Description: Mongofb URL where to write all the queries
+  CodebuildId:
+    Type: String
+    Description: Codebuild id, the unique identifier
+
+Conditions:
+  IsProd: !Equals [ !Ref Environment, 'prod' ]
+
+Resources:
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: !Ref S3Source
+        S3Key: !Sub "${Name}/artifact-${Name}.zip"
+      Description: !Sub Lambda function for the ${Name} api having build id ${CodebuildId}
+      Environment:
+        Variables:
+          NODE_ENV: !Ref Environment
+          VERSION: !Ref CodebuildId
+          MONGODB_URI: !Ref MongoUrl
+      FunctionName: !Sub "${Environment}-function-${Name}"
+      Handler: index.handler
+      MemorySize: 188
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: nodejs12.x
+      Timeout: 10
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Environment}-lambda-role-${Name}"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - "sts:AssumeRole"
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+        Version: "2012-10-17"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaKinesisExecutionRole
+      Path: /
+      Policies:
+        - PolicyName: !Sub "policy-${Environment}-${Name}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - 
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Effect: Allow
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*"
+
+  InboundStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: !Sub ${Environment}-datastream-analytics
+      RetentionPeriodHours: 24
+      ShardCount: 1
+
+  InboundStreamLambdaFunctionEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties: 
+      BatchSize: 100 
+      Enabled: true
+      EventSourceArn: !GetAtt InboundStream.Arn
+      FunctionName: !GetAtt LambdaFunction.Arn
+      MaximumBatchingWindowInSeconds: 0
+      BisectBatchOnFunctionError: true
+      StartingPosition: LATEST 
+
+  LambdaDeployCustomResource:
+    Type: Custom::LambdaVersion
+    Properties:
+      ServiceToken: !GetAtt LambdaDeployFunction.Arn
+      FunctionName: !Sub "${Environment}-function-${Name}"
+      S3Bucket: !Ref S3Source
+      S3Key: !Sub "${Name}/artifact-${Name}.zip"
+      Nonce: !Ref CodebuildId
+
+
+  LambdaDeployFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: 
+      - LambdaFunction
+    Properties:
+      FunctionName: !Sub "${Environment}-deployment-function-${Name}"
+      Handler: index.handler
+      Role: 
+        !If
+        - IsProd
+        - !Sub arn:aws:iam::${AWS::AccountId}:role/DeploymentLambdaRole
+        - arn:aws:iam::495690114622:role/DeploymentLambdaRoleNonProd
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import json
+          import logging
+          import cfnresponse
+          import time
+          from botocore.exceptions import ClientError
+
+          def handler(event, context):
+            logger = logging.getLogger()
+            logger.setLevel(logging.INFO)
+            logger.info (f"Input parameters from cloud formation: {event}")
+            responseData = {}
+            if (event["RequestType"] == 'Delete'):
+              logger.info("Responding to delete event...")
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+
+            try:            
+              lambdaClient = boto3.client('lambda')
+              s3Bucket = event['ResourceProperties']['S3Bucket']
+              s3Key = event['ResourceProperties']['S3Key']
+              functionName = event['ResourceProperties']['FunctionName']
+              logger.info("Updating the function code for Lambda function '{}' to use the code stored in S3 bucket '{}' at key location '{}'".format(functionName, s3Bucket, s3Key))
+              logger.info("Sleeping for 10 seconds to allow IAM permisisons to take effect")
+              time.sleep(10)             
+              response = lambdaClient.update_function_code(
+                FunctionName=functionName,
+                S3Bucket='{}'.format(s3Bucket),
+                S3Key='{}'.format(s3Key),
+                Publish=True)
+              responseValue = "Function: {}, Version: {}, Last Modified: {}".format(response["FunctionName"],response["Version"],response["LastModified"])
+              responseData['Data'] = responseValue
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData, response["FunctionArn"])
+            except ClientError as e:
+              errorMessage = e.response['Error']['Message']
+              logger.error(errorMessage)
+              cfnresponse.send(event, context, cfnresponse.FAILED, responseData)
+      Runtime: "python3.6"
+      Timeout: "30"
+
+Outputs:
+  InboundStreamName:
+    Value: !Ref InboundStream
